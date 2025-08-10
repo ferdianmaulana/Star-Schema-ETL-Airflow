@@ -2,7 +2,7 @@ name: Deploy ETL to Airflow Server
 
 on:
   push:
-    branches: [ main ]
+    branches: [ '**' ]
   workflow_dispatch:
     inputs:
       environment:
@@ -36,14 +36,24 @@ jobs:
         service_account_key: ${{ secrets.GCP_SA_KEY }}
         export_default_credentials: true
     
-    # Set the target server based on input or default to production
+    # Set the target server based on branch or workflow input
     - name: Set Target Server
       id: set-target
       run: |
-        if [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
-          echo "TARGET_SERVER=${{ secrets.AIRFLOW_STAGING_IP }}" >> $GITHUB_ENV
+        # If this is a workflow_dispatch, use the input
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
+            echo "TARGET_SERVER=${{ secrets.AIRFLOW_STAGING_IP }}" >> $GITHUB_ENV
+          else
+            echo "TARGET_SERVER=${{ secrets.AIRFLOW_PROD_IP }}" >> $GITHUB_ENV
+          fi
         else
-          echo "TARGET_SERVER=${{ secrets.AIRFLOW_PROD_IP }}" >> $GITHUB_ENV
+          # For push events, deploy to staging if not main, else production
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "TARGET_SERVER=${{ secrets.AIRFLOW_PROD_IP }}" >> $GITHUB_ENV
+          else
+            echo "TARGET_SERVER=${{ secrets.AIRFLOW_STAGING_IP }}" >> $GITHUB_ENV
+          fi
         fi
     
     # Build the Docker image locally to test it
