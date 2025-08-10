@@ -139,6 +139,17 @@ gs://my-data-bucket/
 - **Idempotent**: Each step can be re-run without duplication
 - **Backfill-Compatible**: All processes support date-based backfilling
 
+
+## CI/CD Deployment Logic
+
+This project uses GitHub Actions for automated deployment to Airflow servers:
+
+- **Push to `main` branch:** Deploys to production Airflow server.
+- **Push to any other branch:** Deploys to staging Airflow server automatically.
+- **Manual workflow_dispatch:** Allows you to choose production or staging for deployment.
+
+To deploy to staging, simply push your changes to any branch except `main`. For production, push to `main`. You can also trigger deployments manually from the Actions tab and select the environment.
+
 ## Setup and Configuration
 
 ### Prerequisites
@@ -184,7 +195,7 @@ You can also trigger individual DAGs manually:
 airflow dags trigger ingest_raw_sales
 ```
 
-## Deployment Options
+## Deployment Options   
 
 ### Production Deployment with CI/CD
 
