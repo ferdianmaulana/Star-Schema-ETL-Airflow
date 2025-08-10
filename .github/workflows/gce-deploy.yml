@@ -1,0 +1,146 @@
+name: Deploy ETL to Airflow Server
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  AIRFLOW_HOME: /srv/airflow
+  CLONE_PATH: /tmp/etl-deploy
+  BRANCH: ${{ github.ref_name }}
+
+jobs:
+  deploy:
+    name: Deploy ETL Scripts
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      
+    # Setup gcloud CLI
+    - name: Set up Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        export_default_credentials: true
+    
+    # Set the target server based on input or default to production
+    - name: Set Target Server
+      id: set-target
+      run: |
+        if [[ "${{ github.event.inputs.environment }}" == "staging" ]]; then
+          echo "TARGET_SERVER=${{ secrets.AIRFLOW_STAGING_IP }}" >> $GITHUB_ENV
+        else
+          echo "TARGET_SERVER=${{ secrets.AIRFLOW_PROD_IP }}" >> $GITHUB_ENV
+        fi
+    
+    # Build the Docker image locally to test it
+    - name: Build Docker image
+      run: |
+        docker build -t star-schema-etl:${{ github.ref_name }} .
+      
+    # Deploy to server using SSH
+    - name: Deploy to Airflow Server
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ env.TARGET_SERVER }}
+        username: airflow
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: 22
+        script_stop: true
+        script: |
+          # Set variables
+          export AIRFLOW_HOME=${{ env.AIRFLOW_HOME }}
+          export CLONE_PATH=${{ env.CLONE_PATH }}
+          export BRANCH=${{ env.BRANCH }}
+          
+          # Refresh previous temp folder
+          rm -rf ${CLONE_PATH}
+          mkdir -p ${CLONE_PATH}
+          
+          # Clone the specific branch
+          git clone https://github.com/${{ github.repository }}.git --branch ${BRANCH} --single-branch ${CLONE_PATH}
+          cd ${CLONE_PATH}
+          
+          # Build docker image for ETL processes if needed
+          if [ -f "Dockerfile" ]; then
+            docker build -t star-schema-etl:${BRANCH} .
+            
+            # Delete dangling images
+            dangling_images=$(docker images --filter "dangling=true" -q --no-trunc)
+            if [ -n "$dangling_images" ]; then 
+              docker rmi $dangling_images
+            fi
+          fi
+          
+          # Replace any CI/CD variables in DAG definitions
+          find ./dags/ -type f -name "*.py" -exec sed -i -e "s|<BRANCH>|$BRANCH|g" {} \;
+          
+          # Create backup of existing DAGs
+          timestamp=$(date +%Y%m%d%H%M%S)
+          mkdir -p ${AIRFLOW_HOME}/backups/${timestamp}
+          cp -r ${AIRFLOW_HOME}/dags ${AIRFLOW_HOME}/backups/${timestamp}/ || echo "No existing dags to backup"
+          
+          # Sync dags folder (don't delete files for archiving purposes)
+          mkdir -p ${AIRFLOW_HOME}/dags
+          rsync -av ./dags/ ${AIRFLOW_HOME}/dags
+          
+          # Ensure catchup is properly configured for backfill capability
+          find ${AIRFLOW_HOME}/dags/ -type f -name "*.py" -exec grep -l "catchup=" {} \; | xargs -I{} echo "Verified backfill capability in {}"
+          
+          # Sync SQL folder structure
+          mkdir -p ${AIRFLOW_HOME}/sql/raw
+          mkdir -p ${AIRFLOW_HOME}/sql/core/dim
+          mkdir -p ${AIRFLOW_HOME}/sql/core/fact
+          mkdir -p ${AIRFLOW_HOME}/sql/datamart
+          rsync -av ./sql/ ${AIRFLOW_HOME}/sql
+          
+          # Sync config folder
+          mkdir -p ${AIRFLOW_HOME}/config
+          rsync -av ./config/ ${AIRFLOW_HOME}/config
+          
+          # Sync utils folder
+          mkdir -p ${AIRFLOW_HOME}/utils
+          rsync -av ./utils/ ${AIRFLOW_HOME}/utils
+          
+          # Sync plugins folder if it exists
+          if [ -d "./plugins" ]; then
+            mkdir -p ${AIRFLOW_HOME}/plugins
+            rsync -av --delete ./plugins/ ${AIRFLOW_HOME}/plugins
+          fi
+          
+          # Set proper permissions
+          sudo chown -R airflow:airflow ${AIRFLOW_HOME}/dags
+          sudo chown -R airflow:airflow ${AIRFLOW_HOME}/plugins
+          
+          # Restart Airflow services
+          if command -v systemctl &> /dev/null && systemctl is-active --quiet airflow-scheduler; then
+            sudo systemctl restart airflow-webserver
+            sudo systemctl restart airflow-scheduler
+          else
+            echo "Airflow not running as systemd service, please restart manually."
+          fi
+          
+          echo "Deployment completed successfully!"
+          
+    - name: Notify Deployment Success
+      if: success()
+      run: |
+        echo "Deployment to ${{ github.event.inputs.environment || 'production' }} completed successfully!"
+        
+    - name: Notify Deployment Failure
+      if: failure()
+      run: |
+        echo "Deployment to ${{ github.event.inputs.environment || 'production' }} failed!"

@@ -1,0 +1,143 @@
+# Sales domain configuration
+project_id: "your-gcp-project-id"
+raw_dataset: "raw_sales"
+core_dataset: "core_sales"
+datamart_dataset: "datamart_sales"
+
+# Default parameters
+default:
+  location: "US"
+  partition_field: "date"
+  
+# Source information
+sources:
+  gcs:
+    bucket: "raw-data-bucket"
+    file_format: "CSV"
+    
+# Tables configuration
+tables:
+  # Raw tables
+  orders:
+    source:
+      type: "gcs"
+      path: "sales/orders/*.csv"
+    schema:
+      - name: "order_id"
+        type: "STRING"
+      - name: "customer_id"
+        type: "STRING"
+      - name: "order_date"
+        type: "DATE"
+      - name: "status"
+        type: "STRING"
+      - name: "amount"
+        type: "FLOAT"
+      - name: "created_at"
+        type: "TIMESTAMP"
+  
+  products:
+    source:
+      type: "gcs"
+      path: "sales/products/*.csv"
+    schema:
+      - name: "product_id"
+        type: "STRING"
+      - name: "name"
+        type: "STRING"
+      - name: "category"
+        type: "STRING"
+      - name: "price"
+        type: "FLOAT"
+      - name: "created_at"
+        type: "TIMESTAMP"
+  
+  customers:
+    source:
+      type: "gcs"
+      path: "sales/customers/*.csv"
+    schema:
+      - name: "customer_id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+      - name: "last_name"
+        type: "STRING"
+      - name: "email"
+        type: "STRING"
+      - name: "address"
+        type: "STRING"
+      - name: "city"
+        type: "STRING"
+      - name: "state"
+        type: "STRING"
+      - name: "zipcode"
+        type: "STRING"
+      - name: "created_at"
+        type: "TIMESTAMP"
+  
+  order_items:
+    source:
+      type: "gcs"
+      path: "sales/order_items/*.csv"
+    schema:
+      - name: "order_item_id"
+        type: "STRING"
+      - name: "order_id"
+        type: "STRING"
+      - name: "product_id"
+        type: "STRING"
+      - name: "quantity"
+        type: "INTEGER"
+      - name: "price"
+        type: "FLOAT"
+      - name: "created_at"
+        type: "TIMESTAMP"
+  
+  # Dimension tables (core layer)
+  dim_customers:
+    type: "dimension"
+    scd_type: 2
+    source_table: "customers"
+    primary_key: "customer_id"
+    dependencies:
+      - "raw.sales.customers"
+  
+  dim_products:
+    type: "dimension"
+    scd_type: 2
+    source_table: "products"
+    primary_key: "product_id"
+    dependencies:
+      - "raw.sales.products"
+      
+  dim_dates:
+    type: "dimension"
+    source_table: "generated" # Generated dimension
+    
+  # Fact tables (core layer)
+  fact_orders:
+    type: "fact"
+    source_table: "orders"
+    dependencies:
+      - "raw.sales.orders"
+      - "raw.sales.order_items"
+      - "core.dim.dim_customers"
+      - "core.dim.dim_products"
+      - "core.dim.dim_dates"
+
+  # Datamart tables
+  sales_summary:
+    type: "datamart"
+    dependencies:
+      - "core.fact.fact_orders"
+      - "core.dim.dim_products"
+      - "core.dim.dim_customers"
+      - "core.dim.dim_dates"
+      
+  customer_analytics:
+    type: "datamart"
+    dependencies:
+      - "core.fact.fact_orders"
+      - "core.dim.dim_customers"
+      - "core.dim.dim_dates"
